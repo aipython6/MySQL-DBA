@@ -1,4 +1,4 @@
-# MySQL文件、日志分析、字符集、用户管理和存储引擎
+# MySQL文件、日志分析、字符集、用户管理、审计和存储引擎
 
 ## MySQL日志类型
 
@@ -866,8 +866,10 @@ rename user 'zhangsan'@'localhost' to 'lisi'@'localhost';
 
 #### 修改用户密码
 
+- 修改root密码
+
 ```mysql
-修改root密码
+
 
 1、mysqladmin -uroot -h localhost -p password 'new_password';
 
@@ -876,28 +878,391 @@ use mysql;
 update mysql.user set authentication_string=password('newpassword') where user ='root';
 flush privileges;
 
+3、用set语句
+set password=password('newpassword');
+
+4、使用alter user（MySQL5.7官方推荐）
+alter user 'root'@'localhost' identified by 'newpassword';
+```
+
+- 修改普通用户密码
+
+```mysql
+1、修改mysql.user表
+use mysql;
+update mysql.user set authentication_string=password('newpassword') where user ='zhangsan' and host='localhost';
+flush privileges;
+
+2、使用grant（推荐使用），需要root登录
+grant usage on *.* to 'zhangsan'@'%' identified by '123456';
+grant usage on *.* to 'zhangsan'@'localhost' identified by '123456';
+flush privileges;
+
+3、当前用户登录
+set password=password('newpassword');
+
+4、使用alter user（MySQL5.7官方推荐）
+alter user 'zhangsan'@'localhost' identified by 'newpassword';
+alter user 'zhangsan'@'%' identified by 'newpassword';
+```
+
+#### 密码过期问题
+
+mysql5.7.11之前有一个360天密码过期的问题
+
+```mysql
+-- 涉及到的密码过期参数
+show variables like 'default_password_lifetime';
++---------------------------+-------+
+| Variable_name             | Value |
++---------------------------+-------+
+| default_password_lifetime | 0     |
++---------------------------+-------+
+-- 1. 默认为0，永久不过期
+
+设置my.cnf
+[mysqld]
+default_password_lifetime=0
+
+-- 2.alter user
+alter user 'zhangsan'@'localhost' password expire interval 90 day;
+-- 查看
+select * from mysql.user;
+
+alter user 'zhangsan'@'localhost' password expire interval never;		-- 永久不过期
+alter user 'zhangsan'@'localhost' password expire interval default;		-- 默认
+```
+
+#### 用户的锁定的解锁
+
+```mysql
+-- 锁定用户
+alter user 'zhangsan'@'localhost' account lock;
+
+-- 解锁用户
+alter user 'zhangsan'@'localhost' account unlock;
+```
+
+#### root密码丢失的解决办法
+
+Windows
+
+```mysql
+方法1、将--skip-grant-tables参数加入到my.ini文件中，重启MySQL server，登录时不再使用密码，进入后再修改密码(改完后删除该参数，重启生效)
+
+方法2、mysqld --skip-grant-tables
+use mysql;
+update mysql.user set authentication_string=password('newpassword') where user ='root';
+flush privileges;
+```
+
+Linux
+
+```mysql
+1.service mysql stop
+2.加入
+[mysqld]
+--skip-grant-tables
+到my.cnf中
+3.service mysql start
+4.mysql -uroot -p		登录不用密码
+5.修改密码
+use mysql;
+update mysql.user set authentication_string=password('newpassword') where user ='root';
+6.取消--skip-grant-tables参数
+7.重启
+8.登录
+```
+
+#### 常用等登录方式和免密登录的方法
+
+```
+---使用密码登录
+①mysql -uroot -p
+②mysql -p
+③mysql -S /mysql/data/3306/mysql.sock -uroot -p
+④mysql -h ip -uroot -p
+⑤mysql -localhost -uroot -p123456
+
+
+---免密登录
+方法1：修改my.cnf
+[client]
+user="root"
+password="123456"
+
+此时登录方法
+mysql
+或
+mysql --defsults-file=../my.cnf
+
+
+方法2：不同客户端
+[client]
+user="root"
+password="123456"
+
+[mysqladmin]
+user="root"
+password="123456"
+
+
+方法3：当前环境变量
+vi ~/.my.cnf
+[client]
+user="root"
+password="123456"
+直接mysql登录
+
+
+方法4：使用login-path（最安全的方法）
+mysql_config_editor set --login-path=password --user=root --password
+mysql_config_editor print --all
+
+清除：
+mysql --login-path=password
+```
+
+
+
+### 用户角色管理
+
+角色：用于批量管理用户，同一个角色下面的数据都有相同的权限
+
+mysql5.7是由mysql.proxies_priv来模拟实现的
+
+```
+参数：
+check_proxy_users=on
+mysql_native_password_proxy_users=on
+```
+
+
+
+## Federate远程访问数据库
+
+### 概述
+
+允许本地访问远程MySQL数据库中表的数据，本地只存结构，不存数据。本地的表结构相当于一个软连接，远程的数据库保存真正的数据
+
+Federate存储引擎默认不开启，如果开启需要在my.cnf加入
+
+```
+[mysqld]
+federate
+```
+
+mysql中的federate目前不支持异构数据库，但mariadb中的FederateX支持
+
+show engines查看
+
+注意：
+
+- 本地表的结构必须与远程的完全一样
+- 远程数据目前只支持mysql
+- 不支持事务
+- 不支持修改表的结构
+- 一般只用于查询
+
+### 如何使用Federate
+
+#### 在建表语句末尾加入
+
+```mysql
+engine=federated connection='mysql://用户名:密码@IP:端口/数据库名/表名';
+```
+
+#### 使用
+
+```
+1、查看存储引擎
+show engines;
+
+2、配置启动federated
+my.cnf中加入下面的参数并重启
+[mysqld]
+federated
+
+service mysql restart
+show engines;
+
 
 ```
 
 
 
-普通用户
+## 审计
+
+目的是用户查询证据，mysql5.7企业版自带审计功能，而社区版本可以使用开源版本——mysql Audit Pluging
+
+另外还有一个审计工具：https://github.com/cookieY/Yearning
+
+在生产环境中不建议开启，会影响性能，可以使用第三方审计
 
 
 
+mysql自带的init-connect+binlog审计
+
+my.cnf
+
+init-connect
+
+超级管理员的操作不会被记录到审计日志中
+
+## MySQL安全SSL认证
+
+### 概述
+
+SSL安全通道，它的流程如下：
+
+1.先为MySQL服务器创建SSL证书和私钥
+
+2.在MySQL中配置SSL，并启动服务
+
+3.创建用户时带上SSL标签
+
+4.连接数据库时带上SSL
+
+```mysql
+show variables like '%ssl%';
++---------------+-----------------+
+| Variable_name | Value           |
++---------------+-----------------+
+| have_openssl  | YES             |
+| have_ssl      | YES             |						(如果为disable，表示SSL没有启动)
+| ssl_ca        | ca.pem          |
+| ssl_capath    |                 |
+| ssl_cert      | server-cert.pem |
+| ssl_cipher    |                 |
+| ssl_crl       |                 |
+| ssl_crlpath   |                 |
+| ssl_key       | server-key.pem  |
++---------------+-----------------+
+
+```
+
+### 配置SSL的方法
+
+#### 手动配置
+
+mysql5.7.6 -
+
+#### 自动配置：
+
+mysql5.7.6
+
+创建并验证SSL的步骤：
+
+1.openssl version
+
+如果没有安装openssl，则需要先安装
+
+yum install -y openssl
+
+mysql_ssl_rsa_setup --datadir=/mysql/data/3306 --user=mysql --uid=mysql
+
+会生成8个.pem文件
 
 
 
+2.修改my.cnf，[mysqld]
+
+ssl-ca=/mysql/data/3306/ca.pem
+
+ssl-cert=/mysql/data/3306/server-cert.ca
+
+ssl-key=/mysql/data/3306/server-key.pem
 
 
 
+3.重启服务器
+
+mysql service restart
 
 
 
+4.检查状态
+
+```mysql
+show global variables like '%ssl%';
+show global variables like 'tls_version';
+```
 
 
 
+5.配置SSL用户并测试
 
+```MySQL
+如果不设置必要的参数时，下面这种方法不强制用户认证SSL
+方法1登录时使用：
+mysql -uroot -p -- ssl-mode=require		使用
+mysql -uroot -p -- ssl-mode=disable		禁用
+
+使用status命令查看是否已经启用
+
+
+方法2：
+mysql -uroot -p --ssl-ca=/mysql/data/3306/ca.pem --ssl-cert=/mysql/data/3306/server-cert.ca --ssl-key=/mysql/data/3306/server-key.pem
+可以使用这种方法进行远程连接
+------------------------------
+用户登录时需要强制认证，创建用户时加上require x509
+create user 'zhangsan'@'%' identified by '123456' require x509;
+grant all on *.* to 'zhangsan'@'%';
+flush privileges;
+
+```
+
+取消用户认证
+
+```mysql
+alter user 'zhangsan'@'%' require none;
+```
+
+JDBC客户如何连接：在URL中加入ssl=true就可以开启SSL
+
+## 存储引擎
+
+### 概述
+
+存储引擎就是各种类型的表
+
+mysql中用得较多的存储引擎是：InnoDB（5.5以后默认）、MyISAM（8.0已经废弃）、MEMORY
+
+### 分类
+
+#### MyISAM
+
+不支持事务、不支持行级锁、只支持表锁、主要用于高负载查询
+
+支持3种不同的存储形式：静态表、动态表、压缩表
+
+#### InnoDB
+
+提供了事务功能（事务的提交、回滚和恢复等），支持行级锁，支持外键约束，支持自动增长列，使用B+Tree索引，叶子节点直接保存的是数据。
+
+相比较于MyISAM，写的效率会差一些，并且会占用更多的磁盘空间以保存数据和索引.
+
+#### 分析InnoDB
+
+缓冲池默认16K，额外内存池默认值为8M
+
+redo log buffer:重做日志信息--redo log buffer--重做日志文件
+
+innodb_log_buffer_size的大小默认为8M
+
+将重做日志缓冲中的内容刷新到外部磁盘的重做日志文件中的3种情况：
+
+- master thread每一秒将重做日志缓冲刷新到重做日志文件
+- 每个事务提交时会将重做日志缓冲刷新到重做日志文件中
+- 当重做日志缓冲池剩余空间小于1/2时，重做日志缓冲刷新到重做日志文件中
+
+#### MEMORY
+
+使用存在于内存中的内容创建表，使用的是Hash索引，所以比B+Tree要快，但是也会带来很多问题，如不支持范围查询.
+
+每个memory表只对应一个磁盘文件，格式为.frm，该文件只存储表的结构，而其数据文件都是存储在内存中，这样有利于对数据进行快速处理，提高整个表的处理能力。因为memory的数据是存储在内存中的，所以一旦服务管理，表中的数据就会丢失。
+
+MEMORY默认使用hash索引，其速度比B+树快，但是它不支持范围查询，只支持=,<>
 
 
 
